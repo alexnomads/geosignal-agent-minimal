@@ -1,0 +1,115 @@
+name: GeoSignal Dashboard Deploy
+
+on:
+  # Push to main branch triggers deployment
+  push:
+    branches: [main]
+  
+  # Scheduled run every day at 11pm UTC (7pm Madrid time)
+  schedule:
+    - cron: '0 23 * * *'
+  
+  # Allow manual trigger via GitHub Actions UI
+  workflow_dispatch:
+    
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+    # Check out repository code
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    # Set up Python environment (version 3.11 recommended)
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+      
+    # Cache pip dependencies for faster builds
+    - name: Cache pip packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+      
+    # Install dependencies (streamlit + requests)
+    - name: Install Python dependencies
+      run: |
+        pip install streamlit requests
+        echo "✅ Dependencies installed successfully"
+    
+    # Fetch latest data using API keys from GitHub secrets
+    - name: Fetch trading signals, markets, whales data
+      env:
+        POLYMARKET_API_KEY: ${{ secrets.POLYMARKET_API_KEY }}
+        ALCHEMY_POLYGON_API_KEY: ${{ secrets.ALCHEMY_POLYGON_API_KEY }}
+        DEMO_MODE: '${{ !secrets.POLYMARKET_API_KEY || secrets.DEMO_MODE }}'
+      run: |
+        echo "🔄 Fetching data..."
+        
+        # Run master script to fetch all data at once
+        python scripts/fetch_all_data.py
+        
+        # Or run individual scripts if preferred:
+        # python scripts/fetch_signals.py
+        # python scripts/fetch_markets.py  
+        # python scripts/fetch_whales.py
+        # python scripts/fetch_articles.py
+        
+        echo "✅ Data fetching completed"
+    
+    # Build pages metadata for GitHub Pages deployment
+    - name: Generate pages metadata
+      run: |
+        cat > .pages-metadata.json << EOF
+        {
+          "object": {
+            "sha": "${{ github.sha }}",
+            "url": "${{ github.event.repository.html_url }}"
+          },
+          "build_settings": {
+            "can_cache": true,
+            "engine": "streamlit",
+            "source": "app.py"
+          }
+        }
+        EOF
+        
+    # Run Streamlit to generate static site files
+    - name: Build Streamlit dashboard to static HTML
+      run: |
+        streamlit run app.py \
+          --server.headless true \
+          --server.port 8501 \
+          --server.address 127.0.0.1 \
+          --disable-browser-greeting
+        echo "✅ Streamlit build completed"
+    
+    # Upload artifact for Pages deployment
+    - name: Upload pages artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: '.'
+
+  # Deploy to GitHub Pages on completion of deploy job
+  pages-deploy:
+    runs-on: ubuntu-latest
+    needs: deploy
+    
+    permissions:
+      pages: write      # to publish to GitHub Pages
+      id-token: write   # to securely sign with GitHub Pages
+  
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+      
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v2
